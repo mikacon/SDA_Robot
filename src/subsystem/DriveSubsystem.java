@@ -19,21 +19,39 @@
 package subsystem;
 
 import robotCore.Logger;
+import robotCore.PWMMotor;
 import robotWpi.command.Subsystem;
 
 /**
  *
  */
-public class ExampleSubsystem extends Subsystem 
+public class DriveSubsystem extends Subsystem 
 {
+	private static final int k_rightMotorPWMPin	= 5;
+	private static final int k_rightMotorDirPin	= 4;
+	private static final int k_leftMotorPWMPin	= 6;
+	private static final int k_leftMotorDirPin	= 7;
+
+	private PWMMotor		m_leftMotor;
+	private PWMMotor		m_rightMotor;
+
     public void initDefaultCommand() 
     {
-    	Logger.Log("ExampleSubsystem", 2, "initDefaultCommand()");
+    		Logger.Log("DriveSubsystem", 2, "initDefaultCommand()");
     }
     
     public void Init()
     {
-    	Logger.Log("DriveSubsystem", 2, "Init()");
+    		Logger.Log("DriveSubsystem", 2, "Init()");
+    	
+    	m_rightMotor = new PWMMotor(k_rightMotorPWMPin, k_rightMotorDirPin);
+    	m_leftMotor = new PWMMotor(k_leftMotorPWMPin, k_leftMotorDirPin);
+    }
+    
+    public void SetPower(double leftPower, double rightPower)
+    {
+    	m_rightMotor.set(rightPower);
+    	m_leftMotor.set(leftPower);
     }
 }
 

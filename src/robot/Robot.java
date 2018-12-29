@@ -18,22 +18,21 @@
 
 package robot;
 
-import robotCore.DigitalInput;
-import robotCore.Encoder;
 import robotCore.IterativeRobot;
 import robotCore.Logger;
-import robotCore.PWMMotor;
-import robotCore.STM32;
-import robotCore.SmartMotor;
-import robotCore.SmartMotor.SmartMotorMode;
-import robotCore.Timer;
-import robotWpi.command.Scheduler;
+import subsystem.DriveSubsystem;
 import subsystem.ExampleSubsystem;
+import robotWpi.command.Scheduler;
+import robotCore.Timer;
 
 public class Robot extends IterativeRobot 
 {
-	public static ExampleSubsystem m_exampleSubsystem;
-	public static OI m_OI;
+	public static final DriveSubsystem m_driveSubsystem = new DriveSubsystem();
+	public static final ExampleSubsystem m_exampleSubsystem = new ExampleSubsystem();
+	public static OI m_OI = null;
+	
+
+	private Timer m_timer = new Timer();
 	
 	Robot()
 	{
@@ -46,9 +45,8 @@ public class Robot extends IterativeRobot
 	@Override
     public void robotInit() 
     {
-		Logger.Log("Robot", 2, "robotiInit()");
-		
-		m_exampleSubsystem = new ExampleSubsystem();
+		m_driveSubsystem.Init();
+		m_exampleSubsystem.Init();
 		m_OI = new OI();
     }
     
@@ -83,15 +81,23 @@ public class Robot extends IterativeRobot
 	{
 		Logger.ResetElapsedTime();
 		Logger.Log("Robot", 2, "teleopInit()");
+		m_driveSubsystem.SetPower(0.5,  0.5);
+		m_timer.reset();
 	}
 	
 	/**
      * Called periodically during operator control
      */
 	@Override
-    public void teleopPeriodic()
+	public void teleopPeriodic()
 	{
 		Logger.Log("Robot", -1, "teleopPeriodic()");
+		
+		if (m_timer.get() >= 2)
+		{
+			m_driveSubsystem.SetPower(0, 0);
+		}
+		
 		Scheduler.getInstance().run();
 		
 		Sleep(10);
