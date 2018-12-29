@@ -1,0 +1,617 @@
+/*
+ *	  Copyright (C) 2016  John H. Gaby
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License as published by
+ *    the Free Software Foundation, version 3 of the License.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    
+ *    Contact: robotics@gabysoft.com
+ */
+
+package robotCore;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+
+import com.pi4j.io.gpio.GpioController;
+import com.pi4j.io.gpio.GpioFactory;
+import com.pi4j.io.gpio.GpioPinDigitalOutput;
+import com.pi4j.io.gpio.PinState;
+import com.pi4j.io.gpio.RaspiPin;
+import com.pi4j.io.serial.Baud;
+import com.pi4j.io.serial.DataBits;
+import com.pi4j.io.serial.FlowControl;
+import com.pi4j.io.serial.Parity;
+import com.pi4j.io.serial.RaspberryPiSerial;
+import com.pi4j.io.serial.Serial;
+import com.pi4j.io.serial.SerialConfig;
+import com.pi4j.io.serial.SerialDataEvent;
+import com.pi4j.io.serial.SerialDataEventListener;
+import com.pi4j.io.serial.SerialFactory;
+import com.pi4j.io.serial.SerialPort;
+import com.pi4j.io.serial.StopBits;
+import com.pi4j.system.SystemInfo;
+
+import robot.Robot;
+
+public class ArduinoConnection 
+{
+	enum ProcessorType
+	{
+		Unknown,
+		Arduino,
+		STM32
+	}
+	
+	private ProcessorType m_type = ProcessorType.Unknown;
+	private Serial m_serial;
+	private static ArduinoConnection m_arduino;
+	private String m_command = "";
+	
+	private int m_maxAnalogInputs = 0;
+	private int m_maxDigitalInputs = 0;
+	private int m_maxMotors = 0;
+	private int m_maxEncoders = 0;
+	
+	private int m_pins = 0;
+	private Timer m_pingTimer = new Timer();
+	private int[] m_analog = new int[8];
+
+	private final GpioController m_gpio = GpioFactory.getInstance();
+    private final GpioPinDigitalOutput m_resetPin = m_gpio.provisionDigitalOutputPin(RaspiPin.GPIO_01, "Reset", PinState.HIGH);
+	
+	public enum PinMode
+	{
+		Input,
+		Output
+	};
+	
+	private ArduinoConnection()
+	{
+	}
+	
+	public ProcessorType GetProcessorType()
+	{
+		return(m_type);
+	}
+	
+	public int GetMaxMotors()
+	{
+		return(m_maxMotors);
+	}
+	
+	public int GetMaxEncoders()
+	{
+		return(m_maxEncoders);
+	}
+	
+	public int GetMaxDigitalInputs()
+	{
+		return(m_maxDigitalInputs);
+	}
+	
+	private void WaitForReset()
+	{
+    	Logger.Log("RobotBase", 0, "Waiting for response");
+        
+        while (m_type == ProcessorType.Unknown)
+        {
+        	Robot.Sleep(100);
+        }
+        
+        Logger.Log("RobotBase", 0, "Processor type = " + m_type);
+        
+        Robot.Sleep(1000);
+	}
+
+	private void ResetArduino()
+	{
+		Logger.Log("RobotBase", 2, "ResetArduino");
+		
+		m_resetPin.setMode(com.pi4j.io.gpio.PinMode.DIGITAL_OUTPUT);
+        m_resetPin.low();
+        Robot.Sleep(10);
+        m_resetPin.high();
+        Robot.Sleep(10);
+		m_resetPin.setMode(com.pi4j.io.gpio.PinMode.DIGITAL_INPUT);
+        
+//        Robot.Sleep(1000);
+        
+        WaitForReset();
+	}
+		
+	public static ArduinoConnection GetInstance()
+	{
+		if (m_arduino == null)
+		{
+			m_arduino	= new ArduinoConnection();
+			
+			try
+			{
+				m_arduino.Start();
+				m_arduino.SetTimeout(1500);
+			}
+			catch (InterruptedException ex)
+			{
+				
+			}
+		}
+		
+		return(m_arduino);
+	}
+	
+/*	private void ReadEncoder(String command)
+	{
+		int[]	args = RobotBase.ParseIntegers(command, 3);
+		
+		if (args != null)
+		{
+			AnalogEncoders.GetInstance().SetData(args[0], args[1], args[2]);
+		}
+	}*/
+	
+	public void ReadDigitalFromPin(int pin)
+	{
+		SendCommand("rd " + pin);
+	}
+	
+	public void ReadAnalogFromPin(int pin)
+	{
+		SendCommand("ra " + pin);
+	}
+	
+	public void EnableServo(int servo, int pin)
+	{
+		SendCommand("se " + servo + " " + pin);
+	}
+	
+	public void SetServo(int servo, int ms)
+	{
+		SendCommand("ss " + servo + " " + ms);
+	}
+	
+	public void EnableRGBLed(int pin, int count)
+	{
+		SendCommand(String.format("li %d %d", pin, count));
+	}
+	
+	public void SetRGBLedColors(int red, int green, int blue)
+	{
+		SendCommand(String.format("ls %d %d %d", red, green, blue));
+	}
+	
+	public void Ping()
+	{
+		m_pingTimer.reset();
+		SendCommand("z");
+	}
+	
+	private void ReadDigital(String command)
+	{
+		int[]	args = RobotBase.ParseIntegers(command,  1);
+		
+//		System.out.println("ReadDigital: " + command);
+		
+		if (args != null)
+		{
+			synchronized(this)
+			{
+				m_pins	= args[0];
+			}
+		}
+	}
+	
+	private void ReadAnalog(String command)
+	{
+		ArrayList<Integer>	args = RobotBase.ParseIntegers(command);
+		
+		while (args.size() >= 2)
+		{
+			int	pin	= args.get(0).intValue();
+			args.remove(0);
+			int value = args.get(0).intValue();
+			args.remove(0);
+			
+			if ((pin >= 0) && (pin < m_analog.length))
+			{
+				m_analog[pin]	= value;
+			}
+		}
+	}
+	
+	public boolean GetPinState(int pin)
+	{
+		synchronized(this)
+		{
+			return((m_pins & (1 << pin)) != 0);
+		}
+	}
+	
+	public int GetAnalogPin(int pin)
+	{
+		if ((pin >= 0) && (pin < m_analog.length))
+		{
+			synchronized(this)
+			{
+				return(m_analog[pin]);
+			}
+		}
+		
+		return(0);
+	}
+	
+	private void ReadGyro(String args)
+	{
+		int a[] = RobotBase.ParseIntegers(args, 3);
+		
+//		System.out.println("ReadGyro: " + args);
+		
+		if (a != null)
+		{
+			Gyro.SetData(a[0], a[1], a[2]);
+		}
+	}
+	
+/*	private void ReadIREncoder(String args)
+	{
+		int a[]	= Robot.ParseIntegers(args, 3);
+		
+		if (a != null)
+		{
+			IREncoder.SetData(a[0], a[1], a[2]);
+		}
+	}*/
+	
+	private void ProcessorTypeCommand(String args)
+	{
+		if (args.length() >= 1)
+		{
+			switch (args.charAt(0))
+			{
+			case 'a':
+				m_type = ProcessorType.Arduino;
+				break;
+				
+			case 's':
+				m_type = ProcessorType.STM32;
+				break;
+				
+			default:
+				m_type = ProcessorType.Unknown;
+				Logger.Log("ArduinoConnection", 3, String.format("Invalid type: '%c'", args.charAt(0)));
+				break;
+			}
+			
+			Logger.Log("ArduinoConnection", 0, "type: " + m_type);
+			
+		}
+	}
+	
+	private int ReadMaxCommand(String args)
+	{
+		int a[] = Robot.ParseIntegers(args,  1);
+		
+		if (a == null)
+		{
+			return(0);
+		}
+		
+		return(a[0]);
+	}
+	
+	private void InfoCommand(String command)
+	{
+		if (command.length() >= 1)
+		{
+			String args = command.substring(1).trim();
+			
+			switch (command.charAt(0))
+			{
+			case 't':
+				ProcessorTypeCommand(args);
+				break;
+				
+			case 'a':	// # analog inputs
+				m_maxAnalogInputs = ReadMaxCommand(args);
+				break;
+				
+			case 'd':	// # digital inputs
+				m_maxDigitalInputs = ReadMaxCommand(args);
+				break;
+				
+			case 'm':	// # motors
+				m_maxMotors = ReadMaxCommand(args);
+				break;
+				
+			case 'e':	// # encoders
+				m_maxEncoders = ReadMaxCommand(args);
+			}
+		}
+	}
+	
+	private void EnableCommand(String args)
+	{
+		Logger.Log("ArduinoConnection", 3, args.charAt(0) == 'e' ? "Enabled" : "Disabled");
+		
+/*		if (args.charAt(0) == 'e')
+		{
+			RobotBase.GetInstance().Enable();	
+		}
+		else
+		{
+			RobotBase.GetInstance().Disable();
+		}*/
+	}
+	
+	private void ProcessCommand(String command)
+	{
+//		System.out.println("command = " + command);
+		
+//		Logger.Log("ArduinoConnection", 0, command);
+//		Logger.Log("ArduinoConnection", 0, String.format("cmd='%c'", command.charAt(0)));
+		
+		if (command.length() >= 1)
+		{
+			String args = command.substring(1).trim();
+			
+			switch (command.charAt(0))
+			{
+			case '.':
+					break;
+					
+/*			case 's':
+				StartCommand(args);
+				break;*/
+				
+			case 'i':
+				InfoCommand(args);
+				break;
+				
+			case 'x':
+				EnableCommand(args);
+				break;
+				
+			case 'e':
+				Encoder.Command(args);
+				break;
+				
+			case 'd':
+				DigitalInput.Command(args);
+				break;
+				
+/*			case 'e':
+				if (command.length() > 1)
+				{
+					ReadEncoder(command.substring(1).trim());
+				}
+				break;
+				
+			case 'a':
+				if (command.length() > 1)
+				{
+					ReadAnalog(command.substring(1).trim());
+				}
+				
+			case 'd':
+				if (command.length() > 1)
+				{
+					ReadDigital(command.substring(1).trim());
+				}
+				break;
+				
+			case 'g':
+				if (command.length() > 1)
+				{
+					ReadGyro(command.substring(1).trim());
+				}
+				break;
+				
+			case 'i':
+				if (command.length() > 1)
+				{
+//					System.out.println(command);
+					ReadIREncoder(command.substring(1).trim());
+				}
+				break;*/
+				
+			case 'z':
+				System.out.println("Ping time: " + m_pingTimer.get());
+				Logger.Log("ArduinoConnection", 0, String.format("Ping time: %.4f", m_pingTimer.get()));
+				break;
+				
+			default:
+//				System.out.println("Illegal Command: " + command);
+				Logger.Log("ArduinoConnection", 3, "Illegal Command: " + command);
+				break;
+			}	
+		}
+	}
+	
+	private void DataReceived(String data)
+	{
+		int	idx;
+		
+//		System.out.println("DataReceived: " + data);
+		
+		while ((idx = data.indexOf('\n')) >= 0)
+		{
+			m_command	+= data.substring(0,  idx);
+			ProcessCommand(m_command);
+			
+			m_command	= "";
+			
+			data	= data.substring(idx + 1);
+		}
+		
+		m_command	+= data;
+	}
+	
+	public void Start() throws InterruptedException
+	{
+	    m_serial = SerialFactory.createInstance();
+	
+	    // create and register the serial data listener
+	    m_serial.addListener(new SerialDataEventListener() {
+	        @Override
+	        public void dataReceived(SerialDataEvent event) 
+	        {
+	        	try 
+	        	{
+		        	String data = event.getAsciiString();
+		        	
+//		        	Logger.Log("ArduinoConnection", 1, String.format("d='%s'", data));
+		        	
+//		            System.out.print(data);
+		        	
+					DataReceived(data);
+				} 
+	        	catch (IOException e) 
+	        	{
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+	        }            
+	    });
+	    
+	    try 
+	    {
+            SerialConfig config = new SerialConfig();
+
+            // set default serial settings (device, baud rate, flow control, etc)
+            //
+            // by default, use the DEFAULT com port on the Raspberry Pi (exposed on GPIO header)
+            // NOTE: this utility method will determine the default serial port for the
+            //       detected platform and board/model.  For all Raspberry Pi models
+            //       except the 3B, it will return "/dev/ttyAMA0".  For Raspberry Pi
+            //       model 3B may return "/dev/ttyS0" or "/dev/ttyAMA0" depending on
+            //       environment configuration.
+            String port;
+            
+            if (SystemInfo.getBoardType() == SystemInfo.BoardType.RaspberryPi_ZeroW)
+			{
+				port = RaspberryPiSerial.S0_COM_PORT;
+			}
+            else
+            {
+            	port	= SerialPort.getDefaultPort();
+            }
+            
+//            System.out.println("port: " + port);
+
+            config.device(port)	//SerialPort.getDefaultPort())
+                  .baud(Baud._115200)
+                  .dataBits(DataBits._8)
+                  .parity(Parity.NONE)
+                  .stopBits(StopBits._1)
+                  .flowControl(FlowControl.NONE);
+            
+            // open the default serial device/port with the configuration settings
+            m_serial.open(config);
+	    }
+	    catch(IOException ex) 
+	    {
+	        System.out.println(" ==>> SERIAL SETUP FAILED : " + ex.getMessage());
+	        return;
+	    }
+		
+	    ResetArduino();
+			    
+	    /*
+	     * Start keep-alive thread
+	     */
+	    new Thread(new Runnable() 
+	    {
+	        @Override
+	        public void run() 
+	        {
+	        	while (true)
+	        	{
+//		        	System.out.println("Sending keep alive");
+		        	SendCommand("k");
+		        	
+		        	try
+		        	{
+		        		Thread.sleep(500);
+		        	}
+		        	catch (InterruptedException ex)
+		        	{
+		        		
+		        	}
+	        	}
+	        }
+	        
+	    }).start();	    
+	}
+	
+	private void writeln(String data)
+	{
+		try 
+		{
+			m_serial.writeln(data);
+		} 
+		catch (IllegalStateException e) 
+		{
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} 
+		catch (IOException e) 
+		{
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+	
+	public void SendCommand(String command)
+	{
+		synchronized (this)
+		{
+//			try 
+	        {
+//	        	Logger.Log("AdruinoConnection", 1, command);
+	        	writeln(command);
+	        }
+//	        catch(IllegalStateException ex)
+//	        {
+//	            ex.printStackTrace();                    
+//	        }
+		}
+	}
+	
+	public void SetPinMode(int pin, PinMode mode)
+	{
+		switch (mode)
+		{
+		case Input:
+			writeln("i " + pin);
+			break;
+			
+		case Output:
+			writeln("o " + pin);
+			break;
+		}
+	}
+	
+	public void AnalogWrite(int pin, int value)
+	{
+		writeln("wa " + pin + " " + value);
+	}
+	
+	public void DigitalWrite(int pin, int value)
+	{
+		writeln("wd " + pin + " " + value);
+	}
+	
+	public void SetTimeout(int timeout)
+	{
+		writeln("t " + timeout);
+	}
+}

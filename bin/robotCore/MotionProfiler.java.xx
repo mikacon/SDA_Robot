@@ -1,0 +1,263 @@
+package robotCore;
+
+import java.util.concurrent.Future;
+
+import pathfinder.Hermite;
+import pathfinder.MathUtil;
+import pathfinder.Pathfinder;
+import pathfinder.Pathfinder.Path;
+import pathfinder.Pathfinder.Waypoint;
+import robot.Robot;
+import robotCore.SmartMotor.SmartMotorMode;
+import subsystem.DriveSubsystem;
+
+public class MotionProfiler implements Runnable
+{
+	private static final int k_rate = 50;
+	
+	private Future<?> m_scheduler = null;
+	private long m_startTime = 0;
+	private Gyro m_gyro;
+	private SmartMotor m_leftMotor;
+	private SmartMotor m_rightMotor;
+	private Encoder m_leftEncoder;
+	private Encoder m_rightEncoder;
+	private long m_leftPos;
+	private long m_rightPos;
+	private long m_leftStart;
+	private long m_rightStart;
+	private double m_x;
+	private double m_y;
+	private double m_distance;
+	private double m_lastAngle;
+	private Path m_paths;
+	private int m_pathIndex;
+	private double m_kPos = 1;
+	private double m_kAngle = 100;	//150;
+	private boolean m_finished = true;
+	private double m_kd = 0.85;	//0.75; //0.5
+	private double m_centerPos;
+	
+	public MotionProfiler(Gyro gyro, SmartMotor leftMotor, SmartMotor rightMotor)
+	{
+		m_gyro = gyro;
+		m_leftMotor = leftMotor;
+		m_rightMotor = rightMotor;
+		m_leftEncoder = leftMotor.getFeedbackDevice();
+		m_rightEncoder = rightMotor.getFeedbackDevice();
+	}
+	
+	public void Start()
+	{
+		Logger.Log("MotionProfiler", 3, "Start(): m_scheduler = " + m_scheduler);
+		if ((m_paths != null) && (m_scheduler == null))
+		{
+			m_x = 0;
+			m_y = 0;
+			m_distance = 0;
+			m_pathIndex = 0;
+			m_finished = false;
+			m_lastAngle = m_gyro.GetYaw();
+			m_leftEncoder.reset();
+			m_rightEncoder.reset();
+			Robot.m_driveSubsystem.m_leftEncoder2.reset();
+			m_leftStart = 
+			m_leftPos = m_leftEncoder.get();
+			m_rightStart = 
+			m_rightPos = m_rightEncoder.get();
+			m_centerPos = 0;
+			
+			m_leftMotor.setControlMode(SmartMotorMode.Speed);
+			m_rightMotor.setControlMode(SmartMotorMode.Speed);
+//			m_leftMotor.set(2000);	//180);
+//			m_rightMotor.set(2000);	//350);
+			
+			m_startTime = System.currentTimeMillis();
+			m_scheduler = RobotBase.Schedule(this, k_rate);
+
+			Logger.Log("MotionProfiler", 1, ",time,idx,x,y,dist,ls,rs,angle,dl,dr,ltv,rtv,lv,rv,cp,tcp,ta,tx,ty,lp,rp,lt,rt");
+		}
+	}
+	
+	public void StopMotors()
+	{
+		m_leftMotor.setControlMode(SmartMotorMode.Power);
+		m_leftMotor.set(0);;
+		
+		m_rightMotor.setControlMode(SmartMotorMode.Power);
+		m_rightMotor.set(0);
+	}
+	
+	public void Stop()
+	{
+		Logger.Log("MotionProfiler", 3, "Stop()");
+		if (m_scheduler != null)
+		{
+			m_scheduler.cancel(false);
+			m_scheduler = null;
+			
+			StopMotors();
+		}
+	}
+	
+	public void SetWaypoints(Waypoint[] waypoints)
+	{
+/*		m_paths = Generator.GeneratePath(	waypoints, 
+				waypoints.length, 
+				new Hermite(), 
+				1000, 
+				k_rate / 1000.0,
+				2500,
+				2000,
+				100000,
+				DriveSubsystem.in2ticks(13.5));*/
+		
+		m_paths = Pathfinder.computePath(	waypoints, 
+				1000, 
+				k_rate / 1000.0,
+				3000,
+				2000,
+				100000,
+				DriveSubsystem.in2ticks(13.5));
+	}
+	
+	private double AverageAngle(double a1, double a2)
+	{
+		if ((a1 < 0) && (a2 > 0))
+		{
+			a1 += 360;
+		}
+		else if ((a1 > 0) && (a2 < 0))
+		{
+			a2 += 360;
+		}
+		
+		return((a1 + a2) / 2);
+	}
+	
+	private int FindCenterIndex(double pos)
+	{
+		while ((m_pathIndex < m_paths.m_centerPath.length && (pos > m_paths.m_centerPath[m_pathIndex].position)))
+		{
+			m_pathIndex++;
+		}
+		
+		return(m_pathIndex);
+	}
+	
+	public boolean isFinshed()
+	{
+		return(m_finished);
+	}
+	
+	private double adjustAngle(double angle)
+	{
+		if (angle > 180)
+		{
+			angle -= 360;
+		}
+		else if (angle < -180)
+		{
+			angle += 360;
+		}
+		
+		return(angle);
+	}
+
+	@Override
+	public void run() 
+	{
+		long elapsedTime = System.currentTimeMillis() - m_startTime;
+		long leftPos = m_leftEncoder.get();
+		long rightPos = m_rightEncoder.get();
+		int leftSpeed = m_leftEncoder.getSpeed();
+		int rightSpeed = m_rightEncoder.getSpeed();
+		long idl = leftPos - m_leftPos;
+		long idr = rightPos - m_rightPos;
+				
+		double d = ((leftPos - m_leftPos) + (rightPos - m_rightPos)) / 2.0;
+		double nextAngle = m_gyro.GetYaw();
+		double angle = AverageAngle(nextAngle, m_lastAngle);
+		double dx = d * Math.cos(MathUtil.d2r(angle));
+		double dy = d * Math.sin(MathUtil.d2r(angle));			
+		double centerPos = ((leftPos - m_leftStart) + (rightPos - m_rightStart)) / 2.0;
+		double dp; 
+
+		int idx = (int) (elapsedTime / k_rate);
+		
+		if (idl >= idr)
+		{
+			dp = (0.85 * (idl - idr)) + idr;
+		}
+		else
+		{
+			dp = (0.8 * (idl - idr)) + idr;
+		}
+		
+		m_centerPos += dp;
+		centerPos = m_centerPos;
+
+		
+		if (idx < m_paths.m_centerPath.length)
+		{
+			double ltv = m_paths.m_leftPath[idx].velocity;
+			double rtv = m_paths.m_rightPath[idx].velocity;
+		
+			m_x += dx;
+			m_y += dy;
+			m_distance += Math.sqrt(dx * dx + dy * dy);
+			
+			m_leftPos = leftPos;
+			m_rightPos = rightPos;
+			
+//			double deltaPos = m_paths.m_centerPath[idx].position - centerPos;
+//			double deltaPos = m_paths.m_leftPath[idx].position - (leftPos - m_leftStart);
+			double deltaPos = m_paths.m_rightPath[idx].position - (rightPos - m_leftStart);
+			double deltaAngle = adjustAngle(MathUtil.r2d(m_paths.m_centerPath[idx].heading) - nextAngle);
+			
+			double lv = 0;
+			double rv = 0;
+			
+			if ((ltv != 0) && (rtv != 0))
+			{
+				double s  = (m_kPos * deltaPos) / (ltv + rtv);
+				lv = ltv + (s * ltv) - (deltaAngle * m_kAngle);
+				rv = rtv + (s * rtv) + (deltaAngle * m_kAngle);
+			}
+			
+			Logger.Log("MotionProfiler", 1, String.format(",%d,%d,%f,%f,%f,%d,%d,%f,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%f,%f,%d",
+									elapsedTime, idx, m_x, m_y, m_distance, 
+									leftSpeed, rightSpeed, nextAngle,
+									idl, idr,
+									ltv, rtv,
+									lv, rv,
+									centerPos,m_paths.m_centerPath[idx].position,
+									adjustAngle(MathUtil.r2d(m_paths.m_centerPath[idx].heading)),
+									m_paths.m_centerPath[idx].x,
+									m_paths.m_centerPath[idx].y,
+									leftPos - m_leftStart,rightPos - m_rightStart,
+									m_paths.m_leftPath[idx].position,
+									m_paths.m_rightPath[idx].position,
+									Robot.m_driveSubsystem.m_leftEncoder2.get()));
+	
+			m_lastAngle = nextAngle;
+			
+			m_leftMotor.set(lv);
+			m_rightMotor.set(rv);
+		}
+		else
+		{
+			if (!m_finished)
+			{
+				Logger.Log("MotionProfiler", 1, "Path complete");
+				
+				StopMotors();
+				
+				m_finished = true;
+			}
+		}
+		
+//		Logger.Log("MotionProfiler", 1, "Run returns");
+	}
+
+}
