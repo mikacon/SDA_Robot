@@ -19,6 +19,7 @@
 package robot;
 
 import commands.DriveForTimeCommand;
+import commands.DriveForDistanceCommand;
 import robotCore.Joystick;
 import robotWpi.buttons.Button;
 import robotWpi.buttons.JoystickButton;
@@ -34,6 +35,7 @@ public class OI {
     // number it is.
      Joystick m_stick = new Joystick(0);
      Button m_trigger = new JoystickButton(m_stick, 1);
+     Button m_testButton = new JoystickButton(m_stick, 2);
     
     // There are a few additional built in buttons you can use. Additionally,
     // by subclassing Button you can create custom triggers and bind those to
@@ -48,6 +50,6 @@ public class OI {
     public OI()
     {
     	m_trigger.whenPressed(new DriveForTimeCommand(0.75, 2));
+    	m_testButton.whenPressed(new DriveForDistanceCommand(0.5, 2000));
     }
 }
-
