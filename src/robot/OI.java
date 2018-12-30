@@ -18,6 +18,7 @@
 
 package robot;
 
+import commands.DriveForTimeCommand;
 import robotCore.Joystick;
 import robotWpi.buttons.Button;
 import robotWpi.buttons.JoystickButton;
@@ -46,7 +47,7 @@ public class OI {
     // until it is finished as determined by it's isFinished method.
     public OI()
     {
-//    	m_trigger.whenPressed(new ExampleCommand());
+    	m_trigger.whenPressed(new DriveForTimeCommand(0.75, 2));
     }
 }
 
